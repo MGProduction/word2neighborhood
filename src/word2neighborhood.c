@@ -636,6 +636,16 @@ int hashquad_simplecompare(const void*a,const void*b)
  return xa-xb;
 }
 
+int id_compare(const void*a,const void*b)
+{
+ return (*(int*)a)-(*(int*)b);
+}
+
+int cnt_compare(const void*a,const void*b)
+{
+ return ((int*)b)[1]-((int*)a)[1];
+}
+
 int hquad_reduce(hquad*hq,size_t cut)
 {
  int x,y,red=0;
@@ -674,6 +684,35 @@ void hquad_setreadonlymode(hquad*hq)
     }
 }
 
+int hquad_writebinary(hquad*hq,const char*bin)
+{
+ FILE*f=fopen(bin,"wb+");
+ if(f)
+  {
+   int x,y,num=0,err=0;
+   if(fwrite("HQUA",1,4,f)!=4)                                  err++;
+   if(fwrite(&hq->w,1,sizeof(hq->w),f)!=sizeof(hq->w))          err++;
+   if(fwrite(&hq->h,1,sizeof(hq->h),f)!=sizeof(hq->h))          err++;
+   if(fwrite(&hq->size,1,sizeof(hq->size),f)!=sizeof(hq->size)) err++;
+   if(fwrite(&hq->used,1,sizeof(hq->used),f)!=sizeof(hq->used)) err++;
+   for(y=0;y<hq->h;y++)
+    for(x=0;x<hq->w;x++)
+     if(hq->q[y][x].items)
+      {
+       if(fwrite(&hq->q[y][x].num,1,sizeof(hq->q[y][x].num),f)!=sizeof(hq->q[y][x].num)) err++;
+       if(hq->q[y][x].num)
+        if(fwrite(hq->q[y][x].items,1,hq->q[y][x].num*sizeof(hq->q[y][x].items[0]),f)!=hq->q[y][x].num*sizeof(hq->q[y][x].items[0]))
+         err++;
+      }
+     else 
+      if(fwrite(&num,1,sizeof(num),f)!=sizeof(num)) err++;
+   fclose(f);
+   return (err==0);   
+  }    
+ else
+  return 0; 
+}
+
 size_t hquad_getreadonlyrow(hquad*hq,int y,int*row,int maxelements)
 {
  int    qy=y/hq->size;
@@ -705,6 +744,92 @@ size_t hquad_getreadonlyrow(hquad*hq,int y,int*row,int maxelements)
      }
   }
  return cnt/2;
+}
+
+int hquad_writetext(hquad*hq,tfidf_dict*dict,const char*text,int neighborhoodsize)
+{
+ FILE*f=fopen(text,"wb+");
+ if(f)
+  {
+   size_t x,y;
+   int*row=(int*)calloc(neighborhoodsize*2,sizeof(int));
+   for(y=0;y<dict->num;y++)     
+    {
+     size_t rowcnt=hquad_getreadonlyrow(hq,y,row,neighborhoodsize);
+     if(rowcnt) 
+      {
+       const char*szx=dict->items[y].str;
+       fprintf(f,"%s: ",szx);
+       for(x=0;x<rowcnt;x++)
+        {
+         const char*szy=dict->items[row[x*2]].str;
+         int        cnt=row[x*2+1];
+         if(x)
+          fprintf(f,", %s_%d",szy,cnt);
+         else
+          fprintf(f,"%s_%d",szy,cnt);
+        } 
+       fprintf(f,"\r\n");  
+      } 
+     if((y%1024)==0)
+      printf("emit: %d   \r",y);        
+    }
+   free(row); 
+   fclose(f);   
+   return 1;   
+  }   
+ else
+  return 0; 
+}      
+
+int hquad_readbinary(hquad*hq,const char*bin)
+{
+ FILE*f=fopen(bin,"rb");
+ if(f)
+  {   
+   char magic[4];
+   int  ret=1,num=0;
+   if((fread(magic,1,4,f)==4)&&(memcmp(magic,"HQUA",4)==0))
+    {
+     int    x,y;     
+     size_t read;
+     if(fread(&hq->w,1,sizeof(hq->w),f)!=sizeof(hq->w)) 
+      ret=0;
+     else 
+     if(fread(&hq->h,1,sizeof(hq->h),f)!=sizeof(hq->h))
+      ret=0;
+     else 
+     if(fread(&hq->size,1,sizeof(hq->size),f)!=sizeof(hq->size))
+      ret=0;
+     else 
+     if(fread(&hq->used,1,sizeof(hq->used),f)!=sizeof(hq->used))
+      ret=0; 
+     else
+      { 
+       hq->q=calloc(hq->h,sizeof(hashquads*));
+       for(y=0;y<hq->h;y++)
+        hq->q[y]=(hashquads*)calloc(hq->w,sizeof(hashquads));
+       for(y=0;(y<hq->h)&&ret;y++)
+        for(x=0;(x<hq->w)&&ret;x++)
+         if(fread(&num,1,sizeof(num),f)!=sizeof(num))
+          ret=0;
+         else 
+          if(num)
+           {
+            hq->q[y][x].size=hq->q[y][x].num=num;
+            hq->q[y][x].items=(hashquad*)malloc(num*sizeof(hq->q[y][x].items[0]));
+            if((read=fread(hq->q[y][x].items,1,num*sizeof(hq->q[y][x].items[0]),f))!=num*sizeof(hq->q[y][x].items[0]))
+             ret=0;
+           }         
+      }   
+    }  
+   else
+    ret=0; 
+   fclose(f);
+   return ret;   
+  }    
+ else
+  return 0; 
 }
 
 int hquad_get(hquad*hq,int x,int y)
@@ -747,6 +872,24 @@ int getparam(char*request,int argc,char*argv[],char*param)
     return 1;
    }
  return 0;
+}
+
+void setextension(char*file,const char*ext)
+{
+ int l=strlen(file);
+ while(l--)
+  if(file[l]=='.')
+   {
+    strcpy(file+l+1,ext);
+    return;
+   }
+  else
+  if((file[l]=='\\')||(file[l]=='/')) 
+   { 
+    strcat(file,".");strcat(file,ext);
+    return;
+   }
+ strcat(file,".");strcat(file,ext);  
 }
 
 void removeendingcrlf(char*line)
@@ -1294,52 +1437,21 @@ int createneighbors(const char*corpus,const char*dictionary,const char*stops,con
  crp.maxdocs=maxdocs;
  if(corpus_analyze(corpus,&crp))
   {
-   int        ret;
-   tfidf_dict*dict=crp.dict;
-   FILE      *f=fopen(neighbors,"wb+");
-   if(f)
-    {
-     printf("optimizing hquad for output...\n");
-     hquad_setreadonlymode(crp.hq);
-     printf("\nWriting neighborhoods...\n");
-     if(f)
-      {
-       size_t x,y;
-       int*row=(int*)calloc(neighborhoodsize*2,sizeof(int));
-       for(y=0;y<dict->num;y++)     
-        {
-         size_t rowcnt=hquad_getreadonlyrow(crp.hq,y,row,neighborhoodsize);
-         if(rowcnt) 
-          {
-           const char*szx=dict->items[y].str;
-           fprintf(f,"%s: ",szx);
-           for(x=0;x<rowcnt;x++)
-            {
-             const char*szy=dict->items[row[x*2]].str;
-             int        cnt=row[x*2+1];
-             if(x)
-              fprintf(f,", %s_%d",szy,cnt);
-             else
-              fprintf(f,"%s_%d",szy,cnt);
-            } 
-           fprintf(f,"\r\n");  
-          } 
-         if((y%1024)==0)
-          printf("emit: %d   \r",y);        
-        }
-       free(row); 
-       fclose(f);      
-      }   
-     printf("\ndone.\n");  
-     ret=1;
-    }
-   else 
-    {printf("can't write output file\n");ret=0;}  
-     
+   int ln=strlen(neighbors),ret;
+   printf("optimizing hquad for output...\n");
+   hquad_setreadonlymode(crp.hq);     
+   printf("\nWriting neighborhoods...\n");     
+   if((ln>4)&&(_strcmpi(neighbors+ln-4,".txt")==0))
+    ret=hquad_writetext(crp.hq,crp.dict,neighbors,neighborhoodsize);
+   else     
+    ret=hquad_writebinary(crp.hq,neighbors);     
+   if(ret)  
+    printf("\ndone.\n");  
+   else
+    printf("can't write output file\n");     
    if(crp.hq)   hquad_delete(crp.hq);
    if(crp.dict) tfidf_dict_delete(crp.dict);
-   if(crp.stop) tfidf_dict_delete(crp.stop);
-   
+   if(crp.stop) tfidf_dict_delete(crp.stop);   
    return ret;
   } 
  else
@@ -1395,6 +1507,206 @@ int createdictionary(const char*corpus,const char*dictionary,const char*stops,in
   }  
 }
 
+float row_distance(size_t dsize,int*wordrow,size_t wordrowcnt,int*checkrow,size_t checkrowcnt)
+{
+ size_t w=0,c=0,cnt=0;
+ float  dist=0;
+ while((w<wordrowcnt)&&(c<checkrowcnt))
+  {
+   while((w<wordrowcnt)&&(wordrow[w*2]<checkrow[c*2]))
+    {dist+=(wordrow[w*2+1]*wordrow[w*2+1]);w++;cnt++;}
+   while((c<checkrowcnt)&&(checkrow[c*2]<wordrow[w*2]))
+    {dist+=(checkrow[c*2+1]*checkrow[c*2+1]);c++;cnt++;}    
+   while((w<wordrowcnt)&&(c<checkrowcnt)&&(wordrow[w*2]==checkrow[c*2]))
+    {dist+=(checkrow[c*2+1]-wordrow[w*2+1])*(checkrow[c*2+1]-wordrow[w*2+1]);w++;c++;cnt++;}
+  }
+ while(w<wordrowcnt)
+  {dist+=(wordrow[w*2+1]*wordrow[w*2+1]);w++;cnt++;} 
+ while(c<checkrowcnt)
+  {dist+=(checkrow[c*2+1]*checkrow[c*2+1]);c++;cnt++;}     
+ return sqrtf(dist); 
+}
+
+float row_distanceshare(size_t dsize,int*wordrow,size_t wordrowcnt,int*checkrow,size_t checkrowcnt)
+{
+ size_t w=0,c=0,cnt=0;
+ float  dist=0;
+ while((w<wordrowcnt)&&(c<checkrowcnt))
+  {
+   while((w<wordrowcnt)&&(wordrow[w*2]<checkrow[c*2]))
+    w++;
+   while((c<checkrowcnt)&&(checkrow[c*2]<wordrow[w*2]))
+    c++;
+   while((w<wordrowcnt)&&(c<checkrowcnt)&&(wordrow[w*2]==checkrow[c*2]))
+    {dist+=(checkrow[c*2+1]*wordrow[w*2+1]);w++;c++;cnt++;}
+  }
+ if(dist) 
+  return sqrtf(dist); 
+ else
+  return dist; 
+}
+
+typedef struct{
+ int   id;
+ float score;
+}best;
+
+void best_reset(best*b,int hm)
+{ 
+ int i;
+ for(i=0;i<hm;i++)
+  {b[i].id=-1;b[i].score=0;}
+}
+
+void best_add(best*b,int hm,int id,float score,int way)
+{
+ int i=hm;
+ while(i--)
+  if(b[i].id==-1)
+   if(i&&((b[i-1].id==-1)||((way==-1)&&(b[i-1].score>score))||((way==1)&&(b[i-1].score<score))))
+    continue;
+   else
+    {
+     b[i].id=id;
+     b[i].score=score;
+     break;
+    } 
+  else
+  if(i&&(((way==-1)&&(b[i-1].score>score))||((way==1)&&(b[i-1].score<score))))
+   continue;
+  else
+   {
+    int j=hm-1;
+    while(j>i)
+     {
+      b[j].id=b[j-1].id;
+      b[j].score=b[j-1].score;
+      j--;
+     }
+    b[i].id=id;
+    b[i].score=score;
+    break; 
+   } 
+}
+
+int queryneighbors(const char*dictionary,const char*neighbors,int area)
+{ 
+ int        ret=0;
+ tfidf_dict*dict=tfidf_dict_new(256*1024,64*1024,1);
+ if(dict)
+  {
+   printf("reading dictionary (%s)...\n",dictionary);
+   if(tfidf_dict_import(dict,dictionary))
+    {
+     hquad hq;
+     printf("reading neighborhood binary file (%s)...\n",neighbors);
+     if(hquad_readbinary(&hq,neighbors))
+      {
+       int*wordrow=(int*)calloc(area,sizeof(int)*2);
+       int*checkrow=(int*)calloc(area,sizeof(int)*2);
+       printf("Insert word(s) to get most similar elements (empty to quit):\n");
+       while(1)
+        {
+         char line[1024];
+         gets(line);
+         removeendingcrlf(line);
+         if(*line==0)
+          break;
+         else
+         if(memcmp(line,"show ",5)==0)
+          {
+           const char   *l=line+5;
+           tfidf_lemma  *word[8];
+           int          *sum=(int*)calloc(dict->num,sizeof(int));
+           unsigned char*mask=(unsigned char*)calloc(dict->num,sizeof(unsigned char));
+           size_t        i,j,w=0,pow,wpow=0;
+           while(l&&(w<8))
+            {
+             char wrd[256];
+             l=gettoken(l,wrd,sizeof(wrd),' ');
+             word[w]=tfidf_dict_find(dict,wrd);
+             if(word[w]==NULL)
+              printf("word \"%s\" not in dictionary, sorry.\n",wrd);
+             else
+              w++; 
+            }
+           for(pow=1,i=0;i<w;i++,pow*=2)
+            {
+             size_t y,id=word[i]-dict->items;
+             size_t wordrowcnt=hquad_getreadonlyrow(&hq,id,wordrow,area);
+             for(y=0;y<wordrowcnt;y++)
+              if(wordrow[y*2+1]>1)
+               {
+                sum[wordrow[y*2]]+=wordrow[y*2+1];
+                mask[wordrow[y*2]]|=pow;
+               }
+             wpow|=pow;  
+            }
+           for(j=i=0;i<dict->num;i++)
+            if(sum[i]&&(mask[i]==wpow))
+             {wordrow[j*2]=i;wordrow[j*2+1]=sum[i];j++;}
+           qsort(wordrow,j,sizeof(int)*2,cnt_compare);  
+           for(i=0;i<j;i++) 
+            {
+             if(i) printf(", ");
+             printf("%s",dict->items[wordrow[i*2]].str);
+            }
+           printf("\n");             
+           free(sum); 
+          }
+         else
+          {
+           tfidf_lemma*word=tfidf_dict_find(dict,line);
+           if(word==NULL)
+            printf("word not in dictionary, sorry.\n");
+           else
+            {
+             size_t y,id=word-dict->items;
+             best   b[16];
+             int    bestid=-1;
+             float  distance,bestdistance=-1;
+             size_t wordrowcnt=hquad_getreadonlyrow(&hq,id,wordrow,area);
+             qsort(wordrow,wordrowcnt,sizeof(int)*2,id_compare);
+             best_reset(&b[0],sizeof(b)/sizeof(b[0]));
+             for(y=0;y<dict->num;y++)     
+              if(y!=id)
+               {
+                size_t checkrowcnt=hquad_getreadonlyrow(&hq,y,checkrow,area);          
+                if(checkrowcnt)
+                 {     
+                  qsort(checkrow,checkrowcnt,sizeof(int)*2,id_compare);
+                  distance=row_distanceshare(dict->num,wordrow,wordrowcnt,checkrow,checkrowcnt);
+                  //best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,-1);
+                  best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,1);
+                 }  
+               }            
+             printf("Similar to: ");
+             for(y=0;y<sizeof(b)/sizeof(b[0]);y++)
+              if(b[y].id!=-1)
+               { 
+                if(y) printf(", ");               
+                printf("%s",dict->items[b[y].id].str);  
+               } 
+              else
+               break; 
+             printf("\n");  
+            } 
+          } 
+        }
+       free(checkrow);
+       free(wordrow); 
+      }
+     else
+      {printf("can't read neighborhood (binary) file\n");ret=0;}
+    }   
+   else 
+    {printf("can't read dictionary file\n");ret=0;}
+  }  
+ else   
+  {printf("can't create dictionary\n");ret=0;}
+ return ret;
+}
+
 // --------------------------------------------------------------------
 
 int main(int argc,char* argv[])
@@ -1406,13 +1718,14 @@ int main(int argc,char* argv[])
    printf(" (raw or in CoNLLU format), ansi or utf8, using TFxIDF\n");
    printf("\n");
    printf("Options:\n");
-   printf(" -corpus <filename> [needed, corpus to analyze]\n");
-   printf(" -corpusformat conllu-lemma / conllu-form [normal text if not specified]\n");         
-   printf(" -create dictionary|dict|d / neighborhood|neighbors|n [needed]\n");
-   printf("  create a dictionary from corpus or create neighborhood from dictionary&corpus\n");   
-   printf(" -dict <filename> [dictionary.txt if not specified]\n");
-   printf(" -stopwords <filename>\n");
-   printf(" -neighbors <filename> [neighborhood output file, neighbors.txt if not specified]\n");   
+   printf(" -corpus/-crp <filename> [needed, corpus to analyze]\n");
+   printf("[build]\n");
+   printf(" -create/-c dictionary|dict|d / neighborhood|neighbors|n [needed]\n");
+   printf("  create a dictionary from corpus or create neighborhood from dictionary&corpus\n");      
+   printf(" -corpusformat/-crpf conllu-lemma / conllu-form [normal text if not specified]\n");         
+   printf(" -dict <filename> [<corpus>.lex if not specified]\n");
+   printf(" -stopwords/-s <filename>\n");
+   printf(" -neighbors/-n <filename> [neighborhood output file, <corpus.neighbors> if not specified]\n");   
    printf(" -maxdocs <doc number> [max document number to read form corpus file]\n");
    printf(" -sort 0 = alphabetic 1 = tdidf [sort order when creating dictionary]\n");
    printf(" -emit 1 = wordcnt | 2 = doccnt | 4 = tfidf [extra data to store in dictionary file]\n");
@@ -1420,10 +1733,19 @@ int main(int argc,char* argv[])
    printf(" -width <width size> [radius used when creating neighborhood data, default 16]\n");
    printf(" -area <area size> [neighborhood max size for output, default: 64]\n");
    printf(" -bigrams [consider/generate bigrams]\n");
+   printf("[query]\n");
+   printf(" -query [consider/generate bigrams]\n\n");
    printf("Examples:\n");
-   printf(" word2neigh -create dictionary -corpus war&peace.txt -dict novel.txt -stop en.stopwords.txt\n");
-   printf(" word2neigh -create dictionary -corpus wiki.collnu -dict wikidict.txt\n");
-   printf(" word2neigh -create neighborhood -corpus wiki.collnu -dict wikidict.txt -neighbors matrix.txt\n");
+   printf("[build dictionary from a corpus file]\n");
+   printf(" word2neigh -c dictionary -crp \"war&peace.txt\" -dict novel.txt -stop en.stopwords.txt\n");
+   printf(" word2neigh -c dictionary -crp wiki.collnu -crpf conllu-lemma -dict wikidict.txt\n\n");
+   printf("[build readable neighborhood file from a corpus file]\n");
+   printf(" word2neigh -c neighborhood -crp wiki.collnu -crpf conllu-lemma -dict wikidict.txt -neighbors matrix.txt\n\n");
+   printf("[build dictionary + binary neighborhood file from a corpus file]\n");
+   printf(" word2neigh -c d -crp \"war&peace.txt\" -stop en.stopwords.txt\n");
+   printf(" word2neigh -c n -crp \"war&peace.txt\"\n\n");
+   printf("[query from dictionary + binary neighborhood files]\n");
+   printf(" word2neigh -q -crp \"war&peace.txt\"\n");
    return 0;
   }
  else
@@ -1440,10 +1762,14 @@ int main(int argc,char* argv[])
       mode=2;      
     }
    else 
+   if(getparam("-query",argc,argv,value)||getparam("-q",argc,argv,value))
+    mode=3;
+   else
     printf("missing -create param (dictionary or neighborhood request)\n");
    if(getparam("-corpus",argc,argv,value)||getparam("-crp",argc,argv,value)) 
     strcpy(corpus,value);
    else
+   if(mode!=3)
     printf("missing -corpus param (corpus file name)\n");
    if(getparam("-corpusformat",argc,argv,value)||getparam("-crpf",argc,argv,value)) 
     {
@@ -1465,11 +1791,19 @@ int main(int argc,char* argv[])
    if(getparam("-dict",argc,argv,value)||getparam("-d",argc,argv,value)) 
     strcpy(dict,value);    
    else
-    strcpy(dict,"dictionary.txt");
+    {
+     if(*corpus)
+      {strcpy(dict,corpus);setextension(dict,"lex");}
+     else
+      strcpy(dict,"dictionary.txt");
+    } 
    if(getparam("-neighbors",argc,argv,value)||getparam("-n",argc,argv,value)) 
     strcpy(neighbors,value);    
    else
-    strcpy(neighbors,"neighbors.txt");    
+     if(*corpus)
+      {strcpy(neighbors,corpus);setextension(neighbors,"neighbors");}
+     else   
+     strcpy(neighbors,"neighbors.txt");    
    if(getparam("-stopwords",argc,argv,value)||getparam("-s",argc,argv,value)) 
     strcpy(stopwords,value);  
    if(getparam("-maxdocs",argc,argv,value))
@@ -1488,19 +1822,20 @@ int main(int argc,char* argv[])
     emit=atoi(value);        
    if(getparam("-bigrams",argc,argv,value))
     flags|=1;           
-   if(*corpus&&*dict) 
+   
+   printf("Word2Neighborhood\n");
+   switch(mode)
     {
-     printf("Word2Neighborhood\n");
-     switch(mode)
-      {
-       case 1:
-        createdictionary(corpus,dict,stopwords,filter|(conllufilter<<16),fileformat|(format<<8),maxdocs,flags,emit,sortway);
-       break;
-       case 2:
-        createneighbors(corpus,dict,stopwords,neighbors,width,area,filter|(conllufilter<<16),fileformat|(format<<8),maxdocs,flags);
-       break;
-      }       
-    }      
+     case 1:
+      createdictionary(corpus,dict,stopwords,filter|(conllufilter<<16),fileformat|(format<<8),maxdocs,flags,emit,sortway);
+     break;
+     case 2:
+      createneighbors(corpus,dict,stopwords,neighbors,width,area,filter|(conllufilter<<16),fileformat|(format<<8),maxdocs,flags);
+     break;
+     case 3:
+      queryneighbors(dict,neighbors,area);
+     break;
+    }       
   }   
  return 1;
 }
