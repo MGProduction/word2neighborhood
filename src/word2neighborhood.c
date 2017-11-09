@@ -376,22 +376,45 @@ tfidf_lemma*tfidf_dict_add(tfidf_dict*h,const char*lemma,int docid,int cnt)
   return NULL; 
 }
 
+const char*gettoken(const char*s,char*out,int outsize,char sep);
 int tfidf_dict_import(tfidf_dict*h,const char*fn)
 {
  FILE*f=fopen(fn,"rb");
  if(f)
   {
    char   line[2048];
+   int    icnt=-1,idoccnt=-1,itfidf=-1,c;
    size_t hm=0;
    while(!feof(f))
     {
-     size_t i=0,lcnt=0,dcnt=0;     
+     size_t i=0,lcnt=0,dcnt=0;  
+     float  tfidf=0;   
      fgets(line,sizeof(line)-1,f);
      if((hm==0)&&(memcmp(line,"# lemma",7)==0))
-      continue;
+      if(line[7]=='\t')
+      {
+       const char*info=line+8;
+       c=0;       
+       while(info)
+        {
+         char data[64];
+         info=gettoken(info,data,sizeof(data),'\t');
+         if(memcmp(data,"count(",6)==0)
+          {icnt=c;h->lemmas_cnt=atoi(data+6);}
+         else
+         if(memcmp(data,"doccount(",9)==0)
+          {idoccnt=c;h->docs_cnt=atoi(data+9);}
+         else
+         if(memcmp(data,"TFxIDF",6)==0)
+          itfidf=c;
+         c++; 
+        } 
+       continue;
+      } 
      hm++; 
      while((i<sizeof(line)-1)&&(line[i]!='\t')&&(line[i]!='\r')&&(line[i]!='\n')&&(line[i]!=0))
       i++;
+     c=0; 
      while(line[i]=='\t') 
       {
        char   cnt[32];
@@ -403,22 +426,25 @@ int tfidf_dict_import(tfidf_dict*h,const char*fn)
         else 
          i++;
        cnt[j]=0;  
-       if(lcnt==0)
+       if(c==icnt)
         lcnt=atoi(cnt);
        else 
-       if(dcnt==0)
+       if(c==idoccnt)
         dcnt=atoi(cnt);
        else
-        break; 
+       if(c==itfidf)
+        tfidf=(float)atof(cnt);
+       c++;
       } 
      line[i]=0; 
      if(*line)
       {
        tfidf_lemma*lm=tfidf_dict_add(h,line,1,1);        
-       if(lm&&lcnt&&dcnt)
+       if(lm)
         {
          lm->cnt=lcnt;
          lm->doccnt=dcnt;
+         lm->tfidf=tfidf;
         }
       } 
     }
@@ -1271,6 +1297,8 @@ int filter_word(const char*word,int isutf8,int filter)
  return 0;
 }
 
+// --------------------------------------------------------------------
+
 typedef struct{
  int        fileformat;
  int        format;
@@ -1399,6 +1427,8 @@ int corpus_analyze(const char*corpus,corpus_analysis*mode)
   return 0; 
 }
 
+// --------------------------------------------------------------------
+
 int createneighbors(const char*corpus,const char*dictionary,const char*stops,const char*neighbors,int width,int neighborhoodsize,int filter,int fileformat,int maxdocs,int flags)
 { 
  corpus_analysis crp;
@@ -1461,6 +1491,8 @@ int createneighbors(const char*corpus,const char*dictionary,const char*stops,con
   }  
 }
 
+// --------------------------------------------------------------------
+
 int createdictionary(const char*corpus,const char*dictionary,const char*stops,int filter,int fileformat,int maxdocs,int flags,int emit,int sortway)
 {
  corpus_analysis crp;
@@ -1507,24 +1539,28 @@ int createdictionary(const char*corpus,const char*dictionary,const char*stops,in
   }  
 }
 
-float row_distance(size_t dsize,int*wordrow,size_t wordrowcnt,int*checkrow,size_t checkrowcnt)
+// --------------------------------------------------------------------
+
+float row_distance(tfidf_dict*d,int*wordrow,size_t wordrowcnt,int*checkrow,size_t checkrowcnt,size_t*same)
 {
- size_t w=0,c=0,cnt=0;
- float  dist=0;
+ size_t dsize=d->num;
+ size_t w=0,c=0,cnt=0,scnt=0;
+ float  sdist=0,dist=0,avg=0.5;
  while((w<wordrowcnt)&&(c<checkrowcnt))
   {
    while((w<wordrowcnt)&&(wordrow[w*2]<checkrow[c*2]))
-    {dist+=(wordrow[w*2+1]*wordrow[w*2+1]);w++;cnt++;}
+    {dist+=(avg * avg) * (1/d->items[wordrow[w*2]].tfidf);w++;cnt++;}
    while((c<checkrowcnt)&&(checkrow[c*2]<wordrow[w*2]))
-    {dist+=(checkrow[c*2+1]*checkrow[c*2+1]);c++;cnt++;}    
+    {if(0) dist+=(avg * avg) * (1/d->items[checkrow[c*2]].tfidf);c++;cnt++;}
    while((w<wordrowcnt)&&(c<checkrowcnt)&&(wordrow[w*2]==checkrow[c*2]))
-    {dist+=(checkrow[c*2+1]-wordrow[w*2+1])*(checkrow[c*2+1]-wordrow[w*2+1]);w++;c++;cnt++;}
+    {sdist+=(((float)wordrow[w*2+1]/(float)d->items[wordrow[w*2]].cnt)-((float)checkrow[c*2+1]/(float)d->items[checkrow[c*2]].cnt)) * (((float)wordrow[w*2+1]/(float)d->items[wordrow[w*2]].cnt)-((float)checkrow[c*2+1]/(float)d->items[checkrow[c*2]].cnt)) * (1/d->items[wordrow[w*2]].tfidf);w++;c++;cnt++;scnt++;}
   }
  while(w<wordrowcnt)
-  {dist+=(wordrow[w*2+1]*wordrow[w*2+1]);w++;cnt++;} 
+  {dist+=(avg * avg) * (1/d->items[wordrow[w*2]].tfidf);w++;cnt++;}
  while(c<checkrowcnt)
-  {dist+=(checkrow[c*2+1]*checkrow[c*2+1]);c++;cnt++;}     
- return sqrtf(dist); 
+  {if(0) dist+=(avg * avg) * (1/d->items[checkrow[c*2]].tfidf);c++;cnt++;}
+ if(same) *same=scnt;
+ return sqrtf(dist+sdist); 
 }
 
 float row_distanceshare(size_t dsize,int*wordrow,size_t wordrowcnt,int*checkrow,size_t checkrowcnt)
@@ -1576,18 +1612,23 @@ void best_add(best*b,int hm,int id,float score,int way)
    continue;
   else
    {
-    int j=hm-1;
-    while(j>i)
+    if(i!=hm-1)
      {
-      b[j].id=b[j-1].id;
-      b[j].score=b[j-1].score;
-      j--;
-     }
-    b[i].id=id;
-    b[i].score=score;
+      int j=hm-1;
+      while(j>i)
+       {
+        b[j].id=b[j-1].id;
+        b[j].score=b[j-1].score;
+        j--;
+       }
+      b[i].id=id;
+      b[i].score=score;
+     } 
     break; 
    } 
 }
+
+// --------------------------------------------------------------------
 
 int queryneighbors(const char*dictionary,const char*neighbors,int area)
 { 
@@ -1607,7 +1648,9 @@ int queryneighbors(const char*dictionary,const char*neighbors,int area)
        printf("Insert word(s) to get most similar elements (empty to quit):\n");
        while(1)
         {
-         char line[1024];
+         size_t        w=0;
+         tfidf_lemma  *word[8];
+         char          line[1024];
          gets(line);
          removeendingcrlf(line);
          if(*line==0)
@@ -1616,10 +1659,9 @@ int queryneighbors(const char*dictionary,const char*neighbors,int area)
          if(memcmp(line,"show ",5)==0)
           {
            const char   *l=line+5;
-           tfidf_lemma  *word[8];
            int          *sum=(int*)calloc(dict->num,sizeof(int));
            unsigned char*mask=(unsigned char*)calloc(dict->num,sizeof(unsigned char));
-           size_t        i,j,w=0,pow,wpow=0;
+           size_t        i,j,pow,wpow=0;
            while(l&&(w<8))
             {
              char wrd[256];
@@ -1656,18 +1698,41 @@ int queryneighbors(const char*dictionary,const char*neighbors,int area)
           }
          else
           {
-           tfidf_lemma*word=tfidf_dict_find(dict,line);
-           if(word==NULL)
-            printf("word not in dictionary, sorry.\n");
-           else
+           const char   *l=line;           
+           while(l&&(w<8))
             {
-             size_t y,id=word-dict->items;
+             char wrd[256];
+             l=gettoken(l,wrd,sizeof(wrd),' ');
+             word[w]=tfidf_dict_find(dict,wrd);
+             if(word[w]==NULL)
+              printf("word \"%s\" not in dictionary, sorry.\n",wrd);
+             else
+              w++; 
+            }          
+           if(w)
+            {
+             size_t y,id=word[0]-dict->items,same;
              best   b[16];
              int    bestid=-1;
              float  distance,bestdistance=-1;
              size_t wordrowcnt=hquad_getreadonlyrow(&hq,id,wordrow,area);
              qsort(wordrow,wordrowcnt,sizeof(int)*2,id_compare);
              best_reset(&b[0],sizeof(b)/sizeof(b[0]));
+             if(w==2)
+              {
+               size_t checkrowcnt;
+               y=word[1]-dict->items;
+               checkrowcnt=hquad_getreadonlyrow(&hq,y,checkrow,area);          
+               if(checkrowcnt)
+                {     
+                 qsort(checkrow,checkrowcnt,sizeof(int)*2,id_compare);
+                 distance=row_distance(dict,wordrow,wordrowcnt,checkrow,checkrowcnt,&same);
+                 if((bestdistance==-1)||(distance<bestdistance))
+                  bestdistance=distance;
+                 best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,-1);
+                }                
+              }
+             else 
              for(y=0;y<dict->num;y++)     
               if(y!=id)
                {
@@ -1675,9 +1740,18 @@ int queryneighbors(const char*dictionary,const char*neighbors,int area)
                 if(checkrowcnt)
                  {     
                   qsort(checkrow,checkrowcnt,sizeof(int)*2,id_compare);
-                  distance=row_distanceshare(dict->num,wordrow,wordrowcnt,checkrow,checkrowcnt);
-                  //best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,-1);
-                  best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,1);
+                  if(1)
+                   {                    
+                    distance=row_distance(dict,wordrow,wordrowcnt,checkrow,checkrowcnt,&same);
+                    if((bestdistance==-1)||(distance<bestdistance))
+                     bestdistance=distance;
+                    best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,-1);
+                   }
+                  else
+                   { 
+                    distance=row_distanceshare(dict->num,wordrow,wordrowcnt,checkrow,checkrowcnt);
+                    best_add(&b[0],sizeof(b)/sizeof(b[0]),y,distance,1);
+                   } 
                  }  
                }            
              printf("Similar to: ");
@@ -1685,7 +1759,7 @@ int queryneighbors(const char*dictionary,const char*neighbors,int area)
               if(b[y].id!=-1)
                { 
                 if(y) printf(", ");               
-                printf("%s",dict->items[b[y].id].str);  
+                printf("%s (%.2f)",dict->items[b[y].id].str,b[y].score);  
                } 
               else
                break; 
